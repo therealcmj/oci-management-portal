@@ -1,0 +1,121 @@
+#!/usr/bin/python3.11
+
+import logging
+from http import HTTPStatus
+
+from .client_bundle import ClientBundle
+from ..utils import log_factory
+
+# TEMPORARY: hardcode quarantine compartment
+QUARANTINE_COMPARTMENT_OCID = "ocid1.compartment.oc1..aaaaaaaaeiajbz76hewnwwlqa5o2dpidbg4wm3jghv7a3euoao44zir3shgq"
+
+
+class Deleter:
+    """
+    Deleter handles MOVE (quarantine) operations only.
+    DELETE is intentionally disabled for safety.
+    """
+
+    def __init__(
+        self,
+        config,
+        signer,
+        handler=logging.StreamHandler(),
+        log_level=logging.INFO,
+        regions: list[str] | None = None
+    ):
+        self.logger = log_factory(__name__, log_level, handler)
+
+        self.config = config
+        self.signer = signer
+        self.clients: dict[str, ClientBundle] = self.create_clients(regions)
+
+        # MOVE tree – ONLY SDK-supported operations
+        self.move_tree = {
+            "Instance": self.move_instance,
+            "Volume": self.move_volume,
+            "BootVolume": self.move_boot_volume,
+            "LogGroup": self.move_log_group,
+        }
+
+        self.logger.info("Deleter initialized successfully (MOVE only)")
+
+    def create_clients(self, regions: list[str] | None) -> dict[str, ClientBundle]:
+        clients = {}
+
+        if not regions:
+            clients[self.config["region"]] = ClientBundle(self.config, self.signer)
+        else:
+            for region in regions:
+                self.config["region"] = region
+                self.signer.region = region
+                clients[region] = ClientBundle(self.config, self.signer)
+
+        return clients
+
+    # =========================
+    # MOVE ENTRY POINT
+    # =========================
+    def move(self, resource: dict, **kwargs) -> int:
+        region = kwargs.get("region")
+        target_compartment = kwargs.get(
+            "target_compartment_id",
+            QUARANTINE_COMPARTMENT_OCID
+        )
+
+        resource_type = resource.get("resource_type")
+        identifier = resource.get("identifier")
+
+        self.logger.info(
+            f"MOVE request for {resource_type}: {identifier} → {target_compartment}"
+        )
+
+        try:
+            move_func = self.move_tree[resource_type]
+            response = move_func(
+                identifier=identifier,
+                region=region,
+                target_compartment_id=target_compartment
+            )
+            return response
+        except KeyError:
+            self.logger.warning(
+                f"Resource type '{resource_type}' not supported for MOVE"
+            )
+            return HTTPStatus.NOT_IMPLEMENTED
+
+    # =========================
+    # MOVE IMPLEMENTATIONS
+    # =========================
+    def move_instance(self, identifier: str, region: str, target_compartment_id: str) -> int:
+        return self.clients[region].compute_client.change_instance_compartment(
+            instance_id=identifier,
+            change_instance_compartment_details={
+                "compartmentId": target_compartment_id
+            }
+        ).status
+
+    def move_volume(self, identifier: str, region: str, target_compartment_id: str) -> int:
+        return self.clients[region].blockstorage_client.change_volume_compartment(
+            volume_id=identifier,
+            change_volume_compartment_details={
+                "compartmentId": target_compartment_id
+            }
+        ).status
+
+    def move_boot_volume(self, identifier: str, region: str, target_compartment_id: str) -> int:
+        return self.clients[region].blockstorage_client.change_boot_volume_compartment(
+            boot_volume_id=identifier,
+            change_boot_volume_compartment_details={
+                "compartmentId": target_compartment_id
+            }
+        ).status
+
+    def move_log_group(self, identifier: str, region: str, target_compartment_id: str) -> int:
+        return self.clients[region].logging_management_client.change_log_group_compartment(
+            log_group_id=identifier,
+            change_log_group_compartment_details={
+                "compartmentId": target_compartment_id
+            }
+        ).status
+

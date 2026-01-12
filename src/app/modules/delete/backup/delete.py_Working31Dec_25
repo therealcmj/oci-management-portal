@@ -1,0 +1,229 @@
+#!/usr/bin/python3.11
+
+import logging
+from http import HTTPStatus
+
+from .client_bundle import ClientBundle
+from ..utils import log_factory
+
+# TEMPORARY: hardcode quarantine compartment
+QUARANTINE_COMPARTMENT_OCID = (
+    "ocid1.compartment.oc1..aaaaaaaaeiajbz76hewnwwlqa5o2dpidbg4wm3jghv7a3euoao44zir3shgq"
+)
+
+class Deleter:
+    """
+    Deleter handles MOVE (quarantine) operations only.
+    DELETE is intentionally disabled for safety.
+    """
+
+    def __init__(
+        self,
+        config,
+        signer,
+        handler=logging.StreamHandler(),
+        log_level=logging.INFO,
+        regions: list[str] | None = None,
+    ):
+        self.logger = log_factory(__name__, log_level, handler)
+
+        self.config = config
+        self.signer = signer
+        self.clients: dict[str, ClientBundle] = self.create_clients(regions)
+
+        # MOVE tree – ONLY SDK-supported operations
+        self.move_tree = {
+            # Core
+            "Instance": self.move_instance,
+            "Volume": self.move_volume,
+            "BootVolume": self.move_boot_volume,
+
+            # Observability
+            "LogGroup": self.move_log_group,
+
+            # Functions (Only Application, not individual functions!)
+            "FunctionsApplication": self.move_application,
+
+            # DevOps (FIXED casing)
+            "DevOpsProject": self.move_devops_project,
+            "DevOpsBuildPipeline": self.move_devops_build_pipeline,
+            "DevOpsDeployPipeline": self.move_devops_deploy_pipeline,
+            "DevOpsRepository": self.move_devops_repository,
+
+            # Data/Integration
+            "AutonomousDatabase": self.move_autonomous_database,
+            "AnalyticsInstance": self.move_analytics_instance,
+            "IntegrationInstance": self.move_integration_instance,
+            "OdaInstance": self.move_oda_instance,
+
+            # Bastion
+            "Bastion": self.move_bastion,
+
+            # Resource Manager (Allow alias)
+            "ResourceManagerStack": self.move_resource_manager_stack,
+            "OrmStack": self.move_resource_manager_stack,  # alias
+
+            # Object Storage (Allow alias)
+            "ObjectStorageBucket": self.move_object_storage_bucket,
+            "Bucket": self.move_object_storage_bucket,  # alias
+
+            # NOTE: FunctionsFunction (individual function) and Compartment move not possible in OCI API
+        }
+
+        self.logger.info("Deleter initialized successfully (MOVE only)")
+
+    def create_clients(self, regions: list[str] | None) -> dict[str, ClientBundle]:
+        clients = {}
+        if not regions:
+            clients[self.config["region"]] = ClientBundle(self.config, self.signer)
+        else:
+            for region in regions:
+                self.config["region"] = region
+                self.signer.region = region
+                clients[region] = ClientBundle(self.config, self.signer)
+        return clients
+
+    # =========================
+    # MOVE ENTRY POINT
+    # =========================
+    def move(self, resource: dict, **kwargs) -> int:
+        region = kwargs.get("region")
+        target_compartment = kwargs.get(
+            "target_compartment_id", QUARANTINE_COMPARTMENT_OCID
+        )
+        resource_type = resource.get("resource_type")
+        identifier = resource.get("identifier")
+
+        self.logger.info(
+            f"MOVE request for {resource_type}: {identifier} → {target_compartment}"
+        )
+
+        try:
+            move_func = self.move_tree[resource_type]
+
+            # Merge resource fields into kwargs for methods needing extra info (e.g. namespace for buckets)
+            full_kwargs = {**kwargs, **resource}
+            return move_func(
+                identifier=identifier,
+                region=region,
+                target_compartment_id=target_compartment,
+                **full_kwargs
+            )
+        except KeyError:
+            self.logger.warning(
+                f"Resource type '{resource_type}' not supported for MOVE"
+            )
+            return HTTPStatus.NOT_IMPLEMENTED
+
+    # =========================
+    # MOVE IMPLEMENTATIONS
+    # =========================
+
+    # ---- Compute & Storage ----
+    def move_instance(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].compute_client.change_instance_compartment(
+            instance_id=identifier,
+            change_instance_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_volume(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].blockstorage_client.change_volume_compartment(
+            volume_id=identifier,
+            change_volume_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_boot_volume(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].blockstorage_client.change_boot_volume_compartment(
+            boot_volume_id=identifier,
+            change_boot_volume_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    # ---- Logging ----
+    def move_log_group(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].logging_management_client.change_log_group_compartment(
+            log_group_id=identifier,
+            change_log_group_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    # ---- Functions (App only) ----
+    def move_application(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].functions_management_client.change_application_compartment(
+            application_id=identifier,
+            change_application_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    # ---- DevOps ----
+    def move_devops_project(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].devops_client.change_project_compartment(
+            project_id=identifier,
+            change_project_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_devops_build_pipeline(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].devops_client.change_build_pipeline_compartment(
+            build_pipeline_id=identifier,
+            change_build_pipeline_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_devops_deploy_pipeline(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].devops_client.change_deploy_pipeline_compartment(
+            deploy_pipeline_id=identifier,
+            change_deploy_pipeline_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_devops_repository(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].devops_client.change_repository_compartment(
+            repository_id=identifier,
+            change_repository_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    # ==== Additional Resources ====
+
+    def move_autonomous_database(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].database_client.change_autonomous_database_compartment(
+            autonomous_database_id=identifier,
+            change_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_analytics_instance(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].analytics_client.change_analytics_instance_compartment(
+            analytics_instance_id=identifier,
+            change_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_integration_instance(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].integration_client.change_integration_instance_compartment(
+            integration_instance_id=identifier,
+            change_integration_instance_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_oda_instance(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].oda_client.change_oda_instance_compartment(
+            oda_instance_id=identifier,
+            change_oda_instance_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_bastion(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].bastion_client.change_bastion_compartment(
+            bastion_id=identifier,
+            change_bastion_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_resource_manager_stack(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        return self.clients[region].resource_manager_client.change_stack_compartment(
+            stack_id=identifier,
+            change_stack_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+
+    def move_object_storage_bucket(self, identifier: str, region: str, target_compartment_id: str, **kwargs) -> int:
+        # identifier is the bucket name, and we need namespace_name
+        namespace = kwargs.get("namespace") or kwargs.get("namespace_name")
+        if not namespace:
+            self.logger.error("Object Storage bucket move requires 'namespace' or 'namespace_name' in the resource/kwargs.")
+            return HTTPStatus.BAD_REQUEST
+        return self.clients[region].object_storage_client.change_bucket_compartment(
+            namespace_name=namespace,
+            bucket_name=identifier,
+            change_bucket_compartment_details={"compartmentId": target_compartment_id},
+        ).status
+

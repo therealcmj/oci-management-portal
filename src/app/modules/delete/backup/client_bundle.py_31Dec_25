@@ -1,0 +1,85 @@
+#!/usr/bin/python3.11
+
+from copy import deepcopy
+
+from oci.analytics import AnalyticsClient
+from oci.bastion import BastionClient
+from oci.core import BlockstorageClient, ComputeClient
+from oci.database import DatabaseClient
+from oci.integration import IntegrationInstanceClient
+from oci.oda import OdaClient
+
+# Logging
+from oci.logging import LoggingManagementClient
+
+# Functions
+from oci.functions import FunctionsManagementClient
+
+# Resource Manager (Stacks)
+from oci.resource_manager import ResourceManagerClient
+
+# DevOps
+from oci.devops import DevopsClient
+
+
+class ClientBundle:
+    """
+    ClientBundle bundles all OCI SDK clients used by MOVE (quarantine) logic.
+    Only stable, SDK-supported services are instantiated.
+    """
+
+    def __init__(self, config, signer):
+        # Make a defensive copy of config (important for multi-region use)
+        cfg = deepcopy(config)
+
+        # =========================
+        # Core Compute & Storage
+        # =========================
+        self.compute_client = ComputeClient(cfg, signer=signer)
+        self.blockstorage_client = BlockstorageClient(cfg, signer=signer)
+
+        # =========================
+        # Database & Analytics
+        # =========================
+        self.database_client = DatabaseClient(cfg, signer=signer)
+        self.analytics_client = AnalyticsClient(cfg, signer=signer)
+
+        # =========================
+        # Integration & ODA
+        # =========================
+        self.integration_client = IntegrationInstanceClient(cfg, signer=signer)
+        self.oda_client = OdaClient(cfg, signer=signer)
+
+        # =========================
+        # Bastion
+        # =========================
+        self.bastion_client = BastionClient(cfg, signer=signer)
+
+        # =========================
+        # Logging (Log Groups)
+        # =========================
+        self.logging_management_client = LoggingManagementClient(
+            cfg, signer=signer
+        )
+
+        # =========================
+        # Functions (Applications)
+        # =========================
+        self.functions_management_client = FunctionsManagementClient(
+            cfg, signer=signer
+        )
+
+        # =========================
+        # Resource Manager (Stacks)
+        # =========================
+        self.resource_manager_client = ResourceManagerClient(
+            cfg, signer=signer
+        )
+
+        # =========================
+        # DevOps
+        # =========================
+        self.devops_client = DevopsClient(
+            cfg, signer=signer
+        )
+

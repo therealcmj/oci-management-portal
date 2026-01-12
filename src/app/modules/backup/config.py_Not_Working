@@ -1,0 +1,215 @@
+#!/usr/bin/python3.11
+
+import configparser
+import logging
+import logging.handlers
+
+from oci.config import DEFAULT_LOCATION, DEFAULT_PROFILE
+from os import PathLike, getenv
+
+
+class Configuration:
+    """
+    Centralized application configuration.
+
+    Order of precedence:
+    1. Environment variables
+    2. Config file (ini)
+    """
+
+    def __init__(self, file=None, prefix="OCIDOMAIN", **kwargs):
+        # =====================
+        # Default dictionaries
+        # =====================
+        self.app: dict = {
+            "uri": "http://localhost:5000",
+            # tagnamespace
+            # tagkey
+            # filternamespace
+            # filterkey
+            # quarantine_compartment_ocid
+        }
+
+        self.auth: dict = {
+            "authtype": "profile",
+            "configfile": "~/.oci/config",
+            "profile": "DEFAULT",
+        }
+
+        self.idm: dict = {
+            # endpoint
+            # clientid
+            # clientsecret
+        }
+
+        self.logging: dict = {
+            "loglevel": "info",
+            "logformat": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            # logfile
+        }
+
+        # =====================
+        # Parse configuration
+        # =====================
+        self.parse_env(prefix)
+
+        if file:
+            self.parse_ini(file)
+
+        # If filter namespace not provided, default to tag namespace
+        self.app["filternamespace"] = self.app.get(
+            "filternamespace", self.app.get("tagnamespace")
+        )
+
+        # Enable falsy if filter attributes not passed
+        self.filternamespace = None
+        self.filterkey = None
+
+        # =====================
+        # Promote keys to attributes
+        # =====================
+        for dictionary in (self.app, self.auth, self.idm, self.logging):
+            for key, value in dictionary.items():
+                setattr(self, key, value)
+
+        # =====================
+        # Validation
+        # =====================
+        self._validate_required()
+
+        # Logging handler
+        self.handler = self._create_handler()
+
+    def __repr__(self):
+        return (
+            "Configuration:\n"
+            f"\tApp Settings - {self.app}\n"
+            f"\tAuthentication Settings - {self.auth}\n"
+            f"\tIdentity Management Settings - {self.idm}\n"
+            f"\tLogging Settings - {self.logging}"
+        )
+
+    # =====================
+    # Parsers
+    # =====================
+    def parse_ini(self, file: str | PathLike):
+        parser = configparser.ConfigParser(inline_comment_prefixes=["#"])
+        parser.read(file)
+
+        sections = {section: dict(parser.items(section)) for section in parser.sections()}
+
+        try:
+            self.app |= sections.get("APP", {})
+            self.auth |= sections.get("AUTH", {})
+            self.idm |= sections.get("IDM", {})
+            self.logging |= sections.get("LOGGING", {})
+        except Exception:
+            pass
+
+    def parse_env(self, PREFIX: str):
+        app = {}
+        auth = {}
+        idm = {}
+        logging_cfg = {}
+
+        # =====================
+        # Identity / OIDC
+        # =====================
+        if getenv(f"{PREFIX}_IDM_ENDPOINT"):
+            idm["endpoint"] = getenv(f"{PREFIX}_IDM_ENDPOINT")
+
+        if getenv(f"{PREFIX}_CLIENT_ID"):
+            idm["clientid"] = getenv(f"{PREFIX}_CLIENT_ID")
+
+        if getenv(f"{PREFIX}_CLIENT_SECRET"):
+            idm["clientsecret"] = getenv(f"{PREFIX}_CLIENT_SECRET")
+
+        # =====================
+        # Tagging & Filters
+        # =====================
+        if getenv(f"{PREFIX}_TAG_NAMESPACE"):
+            app["tagnamespace"] = getenv(f"{PREFIX}_TAG_NAMESPACE")
+
+        if getenv(f"{PREFIX}_TAG_KEY"):
+            app["tagkey"] = getenv(f"{PREFIX}_TAG_KEY")
+
+        if getenv(f"{PREFIX}_FILTER_NAMESPACE"):
+            app["filternamespace"] = getenv(f"{PREFIX}_FILTER_NAMESPACE")
+
+        if getenv(f"{PREFIX}_FILTER_KEY"):
+            app["filterkey"] = getenv(f"{PREFIX}_FILTER_KEY")
+
+        # =====================
+        # Quarantine Compartment (NEW)
+        # =====================
+        if getenv(f"{PREFIX}_QUARANTINE_COMPARTMENT_OCID"):
+            app["quarantine_compartment_ocid"] = getenv(
+                f"{PREFIX}_QUARANTINE_COMPARTMENT_OCID"
+            )
+
+        # =====================
+        # Defaults
+        # =====================
+        app["uri"] = getenv(f"{PREFIX}_APP_URI", "http://localhost:5000")
+
+        auth["authtype"] = getenv(f"{PREFIX}_AUTH_TYPE", "profile")
+        auth["profile"] = getenv(f"{PREFIX}_PROFILE", DEFAULT_PROFILE)
+        auth["configfile"] = getenv(f"{PREFIX}_LOCATION", DEFAULT_LOCATION)
+
+        logging_cfg["loglevel"] = getenv(f"{PREFIX}_LOG_LEVEL", "info")
+        logging_cfg["logformat"] = getenv(
+            f"{PREFIX}_LOG_FORMAT",
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+
+        if getenv(f"{PREFIX}_LOG_FILE"):
+            logging_cfg["logfile"] = getenv(f"{PREFIX}_LOG_FILE")
+
+        # =====================
+        # Merge
+        # =====================
+        self.app |= app
+        self.auth |= auth
+        self.idm |= idm
+        self.logging |= logging_cfg
+
+    # =====================
+    # Validation
+    # =====================
+    def _validate_required(self):
+        """
+        Validate required configuration values.
+        """
+        if "quarantine_compartment_ocid" not in self.app:
+            raise RuntimeError(
+                "Missing required config: OCIDOMAIN_QUARANTINE_COMPARTMENT_OCID"
+            )
+
+    # =====================
+    # Logging helpers
+    # =====================
+    def get_log_level(self) -> str:
+        return self.loglevel.upper()
+
+    def set_log_level(self, level: str | int):
+        self.loglevel = level
+
+    def get_log_handler(self) -> logging.Handler:
+        return self.handler
+
+    def set_log_handler(self, handler: logging.Handler):
+        self.handler = handler
+
+    def _create_handler(self) -> logging.Handler:
+        handler = logging.StreamHandler()
+
+        if self.logging.get("logfile"):
+            handler = logging.handlers.TimedRotatingFileHandler(
+                self.logging.get("logfile"), when="midnight"
+            )
+
+        handler.setLevel(self.logging.get("loglevel", "info").upper())
+        handler.setFormatter(logging.Formatter(self.logformat))
+
+        return handler
+

@@ -1,0 +1,80 @@
+{# This template is for returning html to be appended to list for supporting pagination #}
+{% if items|length > 0 %}
+    {% for item in items %}
+        <form class="card bg-light mb-3 border-secondary">
+            <div class="card-body row">
+                <div class="col-md-11">
+                    <h4 class="card-title">
+                        <input readonly name="display_name" class="form-control-plaintext ms-2"
+                               value="{{ item.display_name }}">
+                    </h4>
+                    <div class="card-body m-0 py-0">
+                        <div class="row">
+                            <label class="col-sm-2 col-form-label">Resource Type: </label>
+                            <input readonly class="form-control-plaintext col"
+                                   value="{{ item.resource_type }}">
+                        </div>
+                        <div class="row">
+                            <label class="col-sm-2 col-form-label">Compartment: </label>
+                            <input readonly class="form-control-plaintext col"
+                                   value="{{ item.compartment_id }}">
+                        </div>
+                        <div class="row">
+                            <label class="col-sm-2 col-form-label">State: </label>
+                            <input readonly class="form-control-plaintext col"
+                                   value="{{ item.lifecycle_state }}">
+                        </div>
+                        <div class="row">
+                            <label class="col-sm-2 col-form-label">Created: </label>
+                            <input readonly class="form-control-plaintext col"
+                                   value="{{ item.time_created }}">
+                        </div>
+                        <div class="row">
+                            <label class="list-group-item bg-light col-form-label">
+                                Defined Tags:
+                                {% for key, value in item.defined_tags.items() %}
+                                    <p class="mb-0 mt-1">{{ key }}</p>
+                                    {% for tag, tag_value in value.items() %}
+                                        <ul>
+                                            <li>{{ tag }} - {{ tag_value }}</li>
+                                        </ul>
+                                    {% endfor %}
+                                {% endfor %}
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- REQUIRED FIELDS -->
+                <input hidden name="csrf_token" value="{{ tokens.pop() }}">
+                <input hidden name="identifier" value="{{ item.identifier }}">
+                <input hidden name="resource_type" value="{{ item.resource_type }}">
+
+                <div class="col-md-1">
+                    <button type="button" class="btn btn-danger float-end m-1"
+                        hx-delete="/delete"
+                        hx-target="this"
+                        hx-swap="outerHTML"
+                        hx-disabled-elt="this"
+                        hx-confirm="Please confirm delete request">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </form>
+
+        {% if loop.last and next_page %}
+            <div class="text-center mb-4">
+                <button class="btn btn-outline-primary"
+                        hx-get="/p?next_page={{ next_page }}"
+                        hx-target="#inventory"
+                        hx-swap="beforeend">
+                    Load more
+                </button>
+            </div>
+        {% endif %}
+    {% endfor %}
+{% else %}
+    <h1 class="display-6 text-center">No results</h1>
+{% endif %}
+

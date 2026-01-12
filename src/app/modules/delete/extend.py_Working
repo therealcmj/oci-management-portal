@@ -1,0 +1,240 @@
+#!/usr/bin/python3.11
+
+import logging
+import copy
+import re
+from datetime import datetime, timedelta
+from http import HTTPStatus
+
+from oci.core.models import (
+    UpdateInstanceDetails,
+    UpdateVolumeDetails,
+    UpdateBootVolumeDetails,
+)
+from oci.object_storage.models import UpdateBucketDetails
+
+from .client_bundle import ClientBundle
+from ..utils import log_factory
+
+
+# Map OCID shortcodes to full OCI region names
+OCID_REGION_CODES = {
+    "iad": "us-ashburn-1",
+    "phx": "us-phoenix-1",
+    "sjc": "us-sanjose-1",
+    "fra": "eu-frankfurt-1",
+    "lhr": "uk-london-1",
+    "hyd": "in-hyderabad-1",
+    "yyz": "ca-toronto-1",
+    "nrt": "ap-tokyo-1",
+    "icn": "ap-seoul-1",
+}
+
+
+def derive_region_from_ocid(ocid: str) -> str | None:
+    """
+    Extract region from OCID.
+    Example: ocid1.instance.oc1.iad.xxx → us-ashburn-1
+    """
+    match = re.search(r"\.oc1\.([a-z]+)\.", ocid)
+    if match:
+        return OCID_REGION_CODES.get(match.group(1))
+    return None
+
+
+class Extender:
+    """
+    Extender updates a defined tag (expiry) on OCI resources.
+    """
+
+    def __init__(
+        self,
+        config,
+        signer,
+        tag_namespace: str,
+        tag_key: str,
+        handler=logging.StreamHandler(),
+        log_level=logging.INFO,
+        regions: list[str] | None = None,
+    ):
+        self.logger = log_factory(__name__, log_level, handler)
+        self.config = config
+        self.signer = signer
+        self.tag_namespace = tag_namespace
+        self.tag_key = tag_key
+
+        self.clients: dict[str, ClientBundle] = self.create_clients(regions)
+
+        self.update_tag_tree = {
+            "Instance": self.update_instance_tag,
+            "Volume": self.update_volume_tag,
+            "BootVolume": self.update_boot_volume_tag,
+            "ObjectStorageBucket": self.update_bucket_tag,
+            "Bucket": self.update_bucket_tag,
+        }
+
+        self.logger.info("Extender initialized (expiry tag update)")
+
+    # ------------------------------------------------------------------
+    # Client creation
+    # ------------------------------------------------------------------
+    def create_clients(self, regions: list[str] | None) -> dict[str, ClientBundle]:
+        clients = {}
+        if regions:
+            for region in regions:
+                self.config["region"] = region
+                self.signer.region = region
+                clients[region] = ClientBundle(self.config, self.signer)
+        else:
+            region = self.config.get("region")
+            if region:
+                clients[region] = ClientBundle(self.config, self.signer)
+        return clients
+
+    # ------------------------------------------------------------------
+    # REGION RESOLUTION (FIXED)
+    # ------------------------------------------------------------------
+    def _get_region(self, resource: dict, kwargs: dict) -> str | None:
+        """
+        Region resolution priority:
+        1. Derived from OCID (authoritative)
+        2. Explicit region from kwargs
+        3. Resource field
+        4. Config fallback
+        """
+
+        identifier = resource.get("identifier")
+
+        # 1️⃣ Derive from OCID
+        if identifier:
+            ocid_region = derive_region_from_ocid(identifier)
+            if ocid_region:
+                if ocid_region not in self.clients:
+                    self.logger.info(
+                        f"Creating client bundle for derived region {ocid_region}"
+                    )
+                    self.config["region"] = ocid_region
+                    self.signer.region = ocid_region
+                    self.clients[ocid_region] = ClientBundle(
+                        self.config, self.signer
+                    )
+                return ocid_region
+
+        # 2️⃣ Explicit region
+        region = kwargs.get("region")
+        if region and region in self.clients:
+            return region
+
+        # 3️⃣ Resource-provided region
+        region = resource.get("region")
+        if region and region in self.clients:
+            return region
+
+        # 4️⃣ Config fallback
+        region = self.config.get("region")
+        if region and region in self.clients:
+            return region
+
+        return None
+
+    # ------------------------------------------------------------------
+    # EXTEND ENTRY POINT
+    # ------------------------------------------------------------------
+    def extend(self, resource: dict, **kwargs) -> int:
+        identifier = resource.get("identifier")
+        resource_type = resource.get("resource_type")
+        defined_tags = resource.get("defined_tags", {})
+
+        region = self._get_region(resource, kwargs)
+        if not region:
+            self.logger.error(f"Unable to determine region for {identifier}")
+            return HTTPStatus.BAD_REQUEST
+
+        self.logger.info(
+            f"Tag update request for {resource_type}: {identifier} in region {region}"
+        )
+
+        # Determine current expiry
+        current_value = defined_tags.get(self.tag_namespace, {}).get(self.tag_key)
+        if current_value:
+            try:
+                base_date = datetime.strptime(current_value, "%Y-%m-%d").date()
+            except ValueError:
+                self.logger.error(f"Invalid expiry date format: {current_value}")
+                return HTTPStatus.BAD_REQUEST
+        else:
+            base_date = datetime.utcnow().date()
+
+        new_date = base_date + timedelta(days=30)
+        new_value = new_date.strftime("%Y-%m-%d")
+
+        self.logger.info(
+            f"Extending expiry for {identifier}: {current_value} → {new_value}"
+        )
+
+        try:
+            update_func = self.update_tag_tree[resource_type]
+            return update_func(
+                identifier=identifier,
+                region=region,
+                new_value=new_value,
+                defined_tags=defined_tags,
+                **kwargs,
+            )
+        except KeyError:
+            self.logger.warning(
+                f"Resource type '{resource_type}' not supported for extend"
+            )
+            return HTTPStatus.NOT_IMPLEMENTED
+        except Exception as e:
+            self.logger.error(
+                f"Exception while updating {resource_type} {identifier}: {e}"
+            )
+            return HTTPStatus.INTERNAL_SERVER_ERROR
+
+    # ------------------------------------------------------------------
+    # RESOURCE UPDATERS
+    # ------------------------------------------------------------------
+    def _merge_tags(self, defined_tags: dict, new_value: str) -> dict:
+        tags = copy.deepcopy(defined_tags) if defined_tags else {}
+        tags.setdefault(self.tag_namespace, {})
+        tags[self.tag_namespace][self.tag_key] = new_value
+        return tags
+
+    def update_instance_tag(self, identifier, region, new_value, defined_tags, **_):
+        tags = self._merge_tags(defined_tags, new_value)
+        details = UpdateInstanceDetails(defined_tags=tags)
+        return self.clients[region].compute_client.update_instance(
+            identifier, details
+        ).status
+
+    def update_volume_tag(self, identifier, region, new_value, defined_tags, **_):
+        tags = self._merge_tags(defined_tags, new_value)
+        details = UpdateVolumeDetails(defined_tags=tags)
+        return self.clients[region].blockstorage_client.update_volume(
+            identifier, details
+        ).status
+
+    def update_boot_volume_tag(self, identifier, region, new_value, defined_tags, **_):
+        tags = self._merge_tags(defined_tags, new_value)
+        details = UpdateBootVolumeDetails(defined_tags=tags)
+        return self.clients[region].blockstorage_client.update_boot_volume(
+            identifier, details
+        ).status
+
+    def update_bucket_tag(self, identifier, region, new_value, defined_tags, **kwargs):
+        namespace = (
+            kwargs.get("namespace")
+            or kwargs.get("namespace_name")
+            or self.clients[region].object_storage_client.get_namespace().data
+        )
+
+        tags = self._merge_tags(defined_tags, new_value)
+        details = UpdateBucketDetails(defined_tags=tags)
+
+        return self.clients[region].object_storage_client.update_bucket(
+            namespace_name=namespace,
+            bucket_name=identifier,
+            update_bucket_details=details,
+        ).status
+
