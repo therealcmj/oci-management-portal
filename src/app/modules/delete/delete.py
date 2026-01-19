@@ -100,7 +100,7 @@ class Deleter:
         return HTTPStatus.OK
 
     # -------------------------
-    # Per resource logic
+    # Specific resource type logic
     # -------------------------
     def _move_single(self, resource, region, target):
         rtype = resource.get("resource_type")
@@ -128,7 +128,7 @@ class Deleter:
         self.logger.error("No move implementation for %s (%s)", rtype, ocid)
 
     # -------------------------
-    # Bulk for one resource
+    # Bulk Logic
     # -------------------------
     def _try_bulk_one(self, resource, region, target):
         try:
@@ -193,7 +193,7 @@ class Deleter:
             return False
 
     # -------------------------
-    # SDK implementations
+    # Specific SDK implementations
     # -------------------------
     def move_log_group(self, identifier, region, target_compartment_id, **_):
         self.clients[region].logging_management_client.change_log_group_compartment(

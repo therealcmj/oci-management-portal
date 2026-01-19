@@ -5,6 +5,8 @@ from flask import Flask, session, redirect, render_template, url_for, request
 from secrets import token_urlsafe
 from werkzeug import exceptions
 
+import jwt  # required to decode access token for Doamin Name
+
 from .utils import generate_csrf_tokens
 from .config import Configuration
 
@@ -188,12 +190,34 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             session.pop('nonce')
         )
 
+        # Decode access token to extract custom claims (domain)
+        try:
+            claims = jwt.decode(
+                tok['access_token'],
+                options={"verify_signature": False}
+            )
+        except Exception:
+            app.logger.exception("Failed to decode access token")
+            raise exceptions.InternalServerError
+
+        domain = claims.get("domain")
+        if not domain:
+            app.logger.error("Domain claim missing in access token")
+            raise exceptions.InternalServerError
+
+        # Retrieve userinfo for standard identity attributes (email)
         userinfo = oauth.retrieve_userinfo(tok['access_token'])
+        email = userinfo.get("email")
+
+        if not email:
+            app.logger.error("Email claim missing in userinfo response")
+            raise exceptions.InternalServerError
 
         session.clear()
-        session['user'] = f"default/{userinfo['email']}"
+        session['user'] = f"{domain}/{email}"
         session['jwt'] = tok
         session['userinfo'] = userinfo
+        session['claims'] = claims
 
         return redirect(url_for('home'))
 
@@ -288,4 +312,3 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
         return render_template('button.html', status=result)
 
     return app
-

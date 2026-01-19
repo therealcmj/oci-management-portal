@@ -30,7 +30,7 @@ from .client_bundle import ClientBundle
 from ..utils import log_factory
 
 
-# Bulk tag edit really supported by OCI
+# Bulk tag edit supported by OCI
 BULK_EXTEND_SUPPORTED_TYPES = {
     "Instance",
     "Volume",
@@ -45,7 +45,7 @@ BULK_EXTEND_SUPPORTED_TYPES = {
     "TagNamespace",
 }
 
-
+# OCI Regions: Need to add more !!
 OCID_REGION_CODES = {
     "iad": "us-ashburn-1",
     "phx": "us-phoenix-1",
@@ -117,7 +117,9 @@ class Extender:
 
         self.logger.info("Extender initialized")
 
-    # ------------------------------------------------
+    # -------------------------
+    # Client creation
+    # -------------------------
     def create_clients(self, regions):
         clients = {}
         if regions:
@@ -136,7 +138,10 @@ class Extender:
             self.clients[region] = ClientBundle(self.config, self.signer)
         return region
 
-    # ------------------------------------------------
+
+    # -------------------------
+    # Specifc SDK Logic 
+    # -------------------------
     def extend(self, resource: dict) -> int:
         ocid = resource.get("identifier")
         rtype = resource.get("resource_type")
@@ -193,7 +198,7 @@ class Extender:
             )
             return HTTPStatus.INTERNAL_SERVER_ERROR
 
-    # ------------------------------------------------
+
     def _try_bulk_extend(self, resource, region, new_value) -> bool:
         ocid = resource.get("identifier")
         rtype = resource.get("resource_type")
@@ -247,7 +252,7 @@ class Extender:
             )
             return False
 
-    # ------------------------------------------------
+
     def _merge_tags(self, defined_tags, new_value):
         tags = copy.deepcopy(defined_tags) if defined_tags else {}
         tags.setdefault(self.tag_namespace, {})
