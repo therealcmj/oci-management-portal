@@ -2,6 +2,7 @@
 
 from http import HTTPStatus, HTTPMethod
 from flask import Flask, session, redirect, render_template, url_for, request
+from flask import Response as FlaskResponse
 from secrets import token_urlsafe
 from werkzeug import exceptions
 from werkzeug.wrappers.response import Response
@@ -14,7 +15,7 @@ from modules.authenticator import Authenticator
 from modules.search import Search, SearchError, ExpiryFilter, QueryTags
 from modules.delete import Deleter
 from modules.delete.extend import Extender
-from modules.request_chaser import WorkRequestChaser
+from modules.request_chaser import WorkRequestChaser, WorkRequestChaserException
 
 
 def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
@@ -277,23 +278,29 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             raise exceptions.Unauthorized
 
         if not work_request_id or not action:
-            return render_template('button.html', status=HTTPStatus.BAD_REQUEST)
+            return render_template('components/button.html', status=HTTPStatus.BAD_REQUEST)
 
         if region and region not in search.region_names:
             app.logger.warning(f'/r invalid region supplied: {region}')
-            return render_template('button.html', status=HTTPStatus.BAD_REQUEST)
+            return render_template('components/button.html', status=HTTPStatus.BAD_REQUEST)
 
-        status = request_chaser.get_work_request(
-            work_request_id,
-            region,
-            action
-        )
+        try:
+            status = request_chaser.get_work_request(
+                work_request_id,
+                region,
+                action
+            )
+        except WorkRequestChaserException:
+            app.logger.exception('exception occurred getting work request')
+            return render_template('components/button.html',
+                                   status=HTTPStatus.BAD_REQUEST,
+                                   message='ERROR')
 
         app.logger.debug(f'work request status: {status}')
 
         if status not in WorkRequestChaser.SUCCEEDED and status not in WorkRequestChaser.FAILED:
             return render_template(
-                'button.html',
+                'components/button.html',
                 work_request=work_request_id,
                 action=action,
                 message=status,
@@ -303,7 +310,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
 
         if status in WorkRequestChaser.FAILED:
             return render_template(
-                'button.html',
+                'components/button.html',
                 action=action,
                 status=HTTPStatus.CONFLICT,
                 message=status,
@@ -313,7 +320,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             safe_identifier = (identifier or '').replace('.', '-')
             if not resource_data:
                 return render_template(
-                    'partials/card.html',
+                    'components/card.html',
                     item={
                         'identifier': identifier,
                         'display_name': missing_message,
@@ -334,7 +341,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
 
             card_id = f"card-{(resource_data.get('identifier') or '').replace('.', '-')}"
             return render_template(
-                'partials/card.html',
+                'components/card.html',
                 item=resource_data,
                 token=token,
                 card_id=card_id,
@@ -342,7 +349,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             )
 
         button_html = render_template(
-            'button.html',
+            'components/button.html',
             status=HTTPStatus.OK,
             message=status,
         )
@@ -439,7 +446,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             True
         ):
             app.logger.debug(f'/delete no csrf token returning 400')
-            return render_template('button.html', status=HTTPStatus.BAD_REQUEST)
+            return render_template('components/button.html', status=HTTPStatus.BAD_REQUEST)
 
         if not search.validate_resource(
             session['user'],
@@ -450,7 +457,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
                 f'/delete Unable to validate resource {request.form.get("identifier")} '
                 f'for user {session["user"]}'
             )
-            return render_template('button.html', status=HTTPStatus.UNAUTHORIZED)
+            return render_template('components/button.html', status=HTTPStatus.UNAUTHORIZED)
 
         identifier = request.form.get('identifier', '')
         app.logger.debug(
@@ -459,7 +466,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
 
         # Return BAD REQUEST if no identifier in form to fail early
         if identifier == '':
-            return render_template('button.html', status=HTTPStatus.BAD_REQUEST)
+            return render_template('components/button.html', status=HTTPStatus.BAD_REQUEST)
 
         resource = search.get_resource_by_id(
             identifier,
@@ -470,7 +477,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             app.logger.warning(
                 f'/delete no resource returned for {identifier} returning 404'
             )
-            return render_template('button.html', status=HTTPStatus.NOT_FOUND)
+            return render_template('components/button.html', status=HTTPStatus.NOT_FOUND)
 
         try:
             result = deleter.move(
@@ -481,7 +488,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
         except Exception as exc:
             app.logger.exception('/delete deleter.move raised unhandled error')
             return render_template(
-                'button.html',
+                'components/button.html',
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
         app.logger.info(
@@ -499,7 +506,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             )
 
         return render_template(
-            'button.html',
+            'components/button.html',
             action=WorkRequestChaser.DELETE,
             status=result.status,
             message="REQUESTING",
@@ -525,7 +532,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             True
         ):
             app.logger.warning('/extend no csrf token returning 400')
-            return render_template('button.html', status=HTTPStatus.BAD_REQUEST)
+            return render_template('components/button.html', status=HTTPStatus.BAD_REQUEST)
 
         if not search.validate_resource(
             session['user'],
@@ -536,17 +543,19 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
                 f'/extend Unable to validate resource {request.form.get("identifier")} '
                 f'for user {session["user"]}'
             )
-            return render_template('button.html', status=HTTPStatus.UNAUTHORIZED)
+            return render_template('components/button.html', status=HTTPStatus.UNAUTHORIZED)
 
         identifier = request.form.get('identifier', '')
         app.logger.debug(
-            f'/extend getting resource {identifier} in region {session["region"]}'
+            f'/extend getting resource {identifier or "NONE"} in region {session["region"]}'
         )
 
         # Return BAD REQUEST if no identifier in form to fail early
         if identifier == '':
-            return render_template('button.html', status=HTTPStatus.BAD_REQUEST)
+            return render_template('components/button.html', status=HTTPStatus.BAD_REQUEST)
 
+        # TODO Validate already makes call to get_resource_by_id: Should find way to
+        # remove second call to search
         resource = search.get_resource_by_id(
             identifier,
             region=session['region']
@@ -556,22 +565,20 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             app.logger.warning(
                 f'/extend No resource returned for {identifier} returning 404'
             )
-            return render_template('button.html', status=HTTPStatus.NOT_FOUND)
+            return render_template('components/button.html', status=HTTPStatus.NOT_FOUND)
 
         try:
             result = extender.extend(resource)
-        except Exception as exc:
-            app.logger.exception('/extend extender.extend raised unhandled error')
+        except Exception as e:
+            app.logger.exception(f'/extend extender.extend raised unhandled error {e}')
             return render_template(
-                'button.html',
+                'components/button.html',
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
         app.logger.info(
-            '/extend result status=%s work_request=%s metadata=%s message=%s',
-            result.status,
-            result.work_request,
-            result.metadata,
-            result.message,
+            (f'/extend result status={result.status} '
+            f'work_request={result.work_request} metadata={result.metadata} '
+            f'message={result.message}')
         )
 
         if result.ok:
@@ -581,15 +588,21 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             )
 
         return render_template(
-            'button.html',
+            'components/button.html',
             status=result.status,
             action=WorkRequestChaser.EXTEND,
             message="REQUESTING",
             work_request=result.work_request,
-            operation_message=result.message,
-            operation_metadata=result.metadata,
             identifier=resource.get('identifier'),
             region=session['region'],
         )
+    
+    @app.after_request
+    def add_headers(response: FlaskResponse) -> FlaskResponse:
+        #response.headers['Content-Security-Policy'] = "default-src 'self'"
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+
+        return response
 
     return app
