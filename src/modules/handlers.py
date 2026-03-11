@@ -147,7 +147,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             next_page=next_page,
             tokens=list(tokens.keys()),
             days=extender.extend_period.days,
-            force_delete_types=getattr(Deleter, 'force_delete_types', [])
+            force_delete_types=getattr(deleter, 'force_delete_types', [])
         )
 
     # =====================
@@ -256,7 +256,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
             items=items,
             next_page=next_page,
             tokens=list(tokens.keys()),
-            force_delete_types=getattr(Deleter, 'FORCE_DELETE_TYPES', [])
+            force_delete_types=getattr(deleter, 'force_delete_types', [])
         )
     
     # =====================
