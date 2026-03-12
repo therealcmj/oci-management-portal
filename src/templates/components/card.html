@@ -64,6 +64,10 @@
             {# Extend Button #}
             {% if extend_button %}
                 {{ extend_button }}
+            {% elif disable_extend %}
+            <button type="button" class="btn btn-success m-1" disabled>
+                Extended
+            </button>
             {% else %}
             <button type="button" class="btn btn-primary m-1"
                 hx-post="/extend"

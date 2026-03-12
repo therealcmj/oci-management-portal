@@ -316,7 +316,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
                 message=status,
             )
 
-        def render_card_swap(resource_data: dict | None, missing_message: str):
+        def render_card_swap(resource_data: dict | None, missing_message: str, disable_extend: bool = False):
             safe_identifier = (identifier or '').replace('.', '-')
             if not resource_data:
                 return render_template(
@@ -333,6 +333,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
                     token='',
                     card_id=f"card-{safe_identifier}",
                     hx_swap_oob=True,
+                    disable_extend=disable_extend,
                 )
 
             tokens = generate_csrf_tokens(1)
@@ -346,6 +347,7 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
                 token=token,
                 card_id=card_id,
                 hx_swap_oob=True,
+                disable_extend=disable_extend,
             )
 
         button_html = render_template(
@@ -359,7 +361,11 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
         if identifier:
             resource = search.get_resource_by_id(identifier, region=region)
             if action == WorkRequestChaser.EXTEND:
-                card_fragment = render_card_swap(resource, 'Resource missing after extend')
+                card_fragment = render_card_swap(
+                    resource,
+                    'Resource missing after extend',
+                    disable_extend=True,
+                )
                 return button_html + card_fragment
             if action == WorkRequestChaser.DELETE:
                 card_id = f"card-{(identifier or '').replace('.', '-')}"
@@ -505,16 +511,31 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
                 None
             )
 
+        method = (result.metadata or {}).get('method')
+        identifier_value = resource.get('identifier')
+        region_value = session['region']
+
+        if method == 'force' and result.ok:
+            card_id = f"card-{(identifier_value or '').replace('.', '-')}"
+            button_html = render_template(
+                'components/button.html',
+                action=WorkRequestChaser.DELETE,
+                status=result.status,
+                message="SUCCESS",
+                identifier=identifier_value,
+                region=region_value,
+            )
+            remove_fragment = f'<template hx-swap-oob="delete" id="{card_id}"></template>'
+            return button_html + remove_fragment
+
         return render_template(
             'components/button.html',
             action=WorkRequestChaser.DELETE,
             status=result.status,
             message="REQUESTING",
             work_request=result.work_request,
-            operation_message=result.message,
-            operation_metadata=result.metadata,
-            identifier=resource.get('identifier'),
-            region=session['region'],
+            identifier=identifier_value,
+            region=region_value,
         )
 
     # =====================
