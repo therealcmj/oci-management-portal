@@ -185,6 +185,13 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
 
         app.logger.debug(f'/issues rendering page for {session["user"]}')
         return render_template('issues.html', user=session['user'])
+    
+    # =====================
+    # Health Check
+    # =====================
+    @app.route('/health', methods=[HTTPMethod.GET])
+    def health() -> Response:
+        return Response(response='healthy', status=HTTPStatus.OK)
 
     # =====================
     # Pagination
