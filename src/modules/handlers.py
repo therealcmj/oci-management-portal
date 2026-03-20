@@ -445,6 +445,16 @@ def add_handlers(app: Flask, config: Configuration, **kwargs) -> Flask:
         return redirect(url_for('home'))
 
     # =====================
+    # Favicon
+    # =====================
+    @app.route('/favicon.ico', methods=[HTTPMethod.GET])
+    def favicon() -> FlaskResponse:
+        try:
+            return app.send_static_file('favicon.ico')
+        except exceptions.NotFound:
+            return FlaskResponse(status=HTTPStatus.NO_CONTENT)
+
+    # =====================
     # Delete (Bulk MOVE)
     # =====================
     @app.route('/delete', methods=[HTTPMethod.DELETE])
